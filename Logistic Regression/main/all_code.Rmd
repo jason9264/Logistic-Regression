@@ -1,0 +1,348 @@
+---
+title: "LogReg_HW"
+author: "Jason"
+date: "2024-08-21"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(vcdExtra) #Mantel-Haenszel Test
+library(DataExplorer)
+```
+
+```{r}
+insurance <- read_csv("~/MSA/Logistic Regression/hw/Homework1_LR/insurance_t.csv")
+
+```
+# Testing single individual variable
+```{r}
+test_mod <- glm(INS~DDA, insurance, family = binomial())
+summary(test_mod)
+summary(test_mod)$coefficient[2,4]
+```
+
+# Data Frame with Variable Types
+```{r}
+var1 <- colnames(insurance)[colnames(insurance) != "INS"] # Pull all variable names without target
+
+df1 <- as.data.frame(var1) #Create df with variable names
+
+#Add variable type
+df2 <- df1 %>%
+  mutate(Class = case_when( var1 %in% 
+                              c("SAVBAL", "ATMAMT", "LOCBAL", "ACCTAGE", "DDABAL", "DEP","DEPAMT", "CHECKS", "NSFAMT", "PHONE","TELLER", "POS", "POSAMT", "CDBAL", "IRABAL", "INVBAL","ILSBAL", "MMBAL", "MTGBAL", "CCBAL","INCOME", "LORES", "HMVAL", "AGE", "CRSCORE" ) ~ "Continuous",
+                            var1 %in% c("DDA", "DIRDEP", "SAV", "ATM", "CD", "IRA", "LOC","INV", "ILS", "MM", "MTG", "CC", "SDB", "HMOWN","MOVED", "INAREA") ~ "Binary", 
+                            var1 %in% c("BRANCH", "RES", "CASHBK", "NSF", "MMCRED", "CCPURC") ~ "Nominal",TRUE ~ NA_character_))
+
+df2
+```
+
+
+# For looping log regression
+```{r}
+
+#For loop to model each variable as predictor and append pvalues into df
+for(i in seq_along(var1)){
+  var_name <- var1[i]
+  class_value <- df2$Class[df2$var1 == var_name]
+  # If Continuous Then Logistic Model
+  if (class_value == "Continuous"){
+    formula <- as.formula(paste("INS ~", var_name))
+    log_mod <-  glm(formula, insurance, family = binomial())
+    p_values <-  summary(log_mod)$coefficient[2,4]
+    df2$p_values[i] <- p_values
+    }
+  # If Binary or Ordinal Then Mantel-Haenszel Test
+  else if (class_value == "Binary"){
+    p_values <- CMHtest(table(insurance[["INS"]], insurance[[var_name]]))$table[1,3]
+    
+    df2$p_values[i] <- p_values
+  }
+  # If Nominal Then Pearson's Chi
+  else if (class_value == "Nominal"){
+      p_value <- chisq.test(table(insurance[["INS"]], insurance[[var_name]]))$p.value
+      df2$p_values[i] <- p_value
+}}
+
+df2
+```
+
+# Significant Variables
+```{r}
+significant_var <- df2 %>% filter(p_values < 0.002)
+significant_var
+```
+```{r}
+df3 <- df2 %>% filter(p_values < 0.002)
+df3$odds_ratio <- NA
+
+# Loop through each row in df3
+for (i in seq_len(nrow(df3))) {
+  var_name <- df3$var1[i]
+  class_value <- df3$Class[i]
+  if (class_value == "Binary") {
+      formula <- as.formula(paste("INS ~", var_name))
+      log_mod <- glm(formula, data = insurance, family =
+                       binomial())
+      co_val <- summary(log_mod)$coefficients[2, 1]
+      odds_ratio <- exp(co_val)
+      df3$odds_ratio[i] <- odds_ratio
+  }
+}
+
+odds_data <- df3 %>% filter(!is.na(odds_ratio))
+odds_data <- odds_data %>% arrange(desc(odds_ratio))
+odds_data
+```
+
+```{r}
+library(mgcv)
+df4 <- df2 %>% filter(p_values < 0.002)
+df4 <- df4 %>% filter(Class == "Continuous")
+
+df4$linearity <- NA
+df4$linearity_p_val <- NA  
+
+
+# Loop through each row in df4
+for (i in seq_len(nrow(df4))) {
+  var_name <- df4$var1[i]
+  class_value <- df4$Class[i]
+  
+  if (class_value == "Continuous") {
+    
+    tryCatch({
+    # Define the formula for logistic regression and GAM
+    formula <- as.formula(paste("INS ~", var_name))
+    logit.model <- glm(formula, data = insurance, family =
+                         binomial())
+    gamformula <- as.formula(paste("INS ~ s(", var_name, ")"))
+    fit.gam <- mgcv::gam(gamformula, data = insurance, family =
+                           binomial(link = 'logit'), method = 'REML')
+    # Perform ANOVA 
+    results <- anova(logit.model, fit.gam, test = 'LRT')
+    linearity_p_val <- results$`Pr(>Chi)`[2]  
+    df4$linearity_p_val[i] <- linearity_p_val
+    }, 
+    error = function(e) {
+    message("An error occurred at index ", i, ": ", e$message)
+    df4$linearity[i] <- "errored"
+    })
+    
+    if(linearity_p_val > 0.002) {
+      df4$linearity[i] <- "passed"
+    }
+    else {
+      df4$linearity[i] <- "failed"
+    }
+  }
+}
+
+# View the updated data frame
+linearity_data <- df4
+```
+```{r}
+library(readr)
+ins_bin_t <- read_csv("~/MSA/Logistic Regression/hw/Homework2_LR/insurance_t_bin.csv")
+
+ins_bin_t <- lapply(ins_bin_t, function(x) {
+  x[is.na(x)] <- "MISSING"
+  return(x)
+})
+
+ins_bin_t <- as.data.frame(ins_bin_t)
+
+
+
+```
+
+```{r}
+#Locating seperation issues
+
+var1 <- colnames(ins_bin_t)[colnames(ins_bin_t) != "INS"]
+df5 <- as.data.frame(var1)
+df5$sep_concern <- NA
+
+for (i in seq_along(var1)){
+  table <- table(ins_bin_t[[var1[i]]],ins_bin_t$INS )
+  if(any(table == 0)) {
+    df5$sep_concern[i] = "Yes"
+    print(var1[i])
+    print(table)
+    
+  }
+  else {
+    df5$sep_concern[i] = "No"
+  }
+}
+
+sep_concern <- df5
+```
+```{r}
+#Combining columns
+
+ins_bin_t$CASHBK <- replace(ins_bin_t$CASHBK, ins_bin_t$CASHBK %in% c(1, 2), "1+")
+
+ins_bin_t$MMCRED <- replace(ins_bin_t$MMCRED, ins_bin_t$MMCRED %in% c(5, 3), "3+")
+
+```
+
+```{r}
+
+ins_bin_t <- ins_bin_t %>%
+  mutate(across(everything(), ~as.factor(.)))
+
+full.model <- glm(INS ~ ., data = ins_bin_t, family = binomial(link = "logit")) 
+
+alpha.f = .002
+back.model <- step(full.model, direction = "backward", k = qchisq(alpha.f, 1, lower.tail = FALSE), trace = 0) 
+
+```
+
+```{r}
+full.model.interactions <- glm(factor(INS) ~ (DDA + NSF + IRA + INV + MTG + CC + DDABAL_BIN + CHECKS_BIN + TELLER_BIN + SAVBAL_BIN + ATMAMT_BIN + CDBAL_BIN + ILSBAL_BIN + MMBAL_BIN)^2, data = ins_bin_t, family = binomial(link = "logit"))
+
+full.model <- glm(factor(INS) ~ (DDA + NSF + IRA + INV + MTG + CC + DDABAL_BIN + CHECKS_BIN + TELLER_BIN + SAVBAL_BIN + ATMAMT_BIN + CDBAL_BIN + ILSBAL_BIN + MMBAL_BIN)^2, data = ins_bin_t, family = binomial(link = "logit"))
+
+empty.model <- glm(factor(INS) ~ 1, data = ins_bin_t, family = binomial(link = "logit"))
+
+for.model <- step(empty.model,
+                   scope = list(lower=formula(empty.model),
+                                upper=formula(full.model)),
+                   direction = "forward", k = qchisq(alpha.f, 1, lower.tail = FALSE), trace = 0 )
+
+```
+
+```{r}
+#Forward Model 
+car::Anova(for.model, test = "LR", type = "III", singular.ok = TRUE)
+#Forward Model Accurate P Values
+car::Anova(for.model, test = "LR", type = "III", singular.ok = TRUE)$`Pr(>Chisq)`
+#Backward Model 
+car::Anova(back.model, test = "LR", type = "III", singular.ok = TRUE)
+#Backward Model Accurate P Values
+car::Anova(back.model, test = "LR", type = "III", singular.ok = TRUE)$`Pr(>Chisq)`
+```
+
+```{r}
+#Odds Ratio % in change 
+data.frame(100*(exp(cbind(coef(back.model), confint(back.model)))-1))
+#Odds Ratio per variable 
+data.frame(exp(coef(back.model)))
+```
+
+```{r warning = FALSE}
+#correlation tests by variable 
+corr_tests <- NULL 
+for(i in seq_along(var1)){
+  var_name <- var1[i]
+  corr_test <- cor.test(x = as.numeric(ordered(ins_bin_t[[var_name]])), 
+         y = as.numeric(ordered(ins_bin_t$INS)), 
+         method = "spearman")$estimate
+  corr_tests[i] <- corr_test
+}
+corr_tests
+correlations <- data.frame(
+    Variable = var1,
+    Estimates = corr_tests
+  )
+correlations %>% arrange(desc(Estimates))
+write.csv(correlations, "correlations.csv")
+```
+```{r}
+library(survival)
+concordance(for.model)
+
+```
+```{r}
+ins_bin_t$p_hat <- predict(for.model, type = "response")
+p1 <- ins_bin_t$p_hat[ins_bin_t$INS == 1]
+p0 <- ins_bin_t$p_hat[ins_bin_t$INS == 0]
+
+coef_discrim <- mean(p1) - mean(p0)
+
+ggplot(ins_bin_t, aes(p_hat, fill = factor(INS))) +
+  geom_density(alpha = .7) +
+  scale_fill_grey() +
+  labs(x = "Predicted Probability", fill = "Outcome", title = paste("Coefficient of Discrimination =", round (coef_discrim, 3), sep = ""))
+
+```
+
+```{r}
+library(Hmisc)
+
+somers2(ins_bin_t$p_hat, as.numeric(as.character(ins_bin_t$INS)))
+```
+```{r}
+library(ROCit)
+
+ins_bin_t$p_hat <- as.numeric(ins_bin_t$p_hat)
+str(ins_bin_t$p_hat)
+ins_bin_t$INS <- ifelse(ins_bin_t$INS == "1", 1, 0)
+unique(ins_bin_t$INS)
+
+logit_roc <- rocit(class = ins_bin_t$INS, score =ins_bin_t$p_hat)
+
+plot(logit_roc)
+```
+
+```{r}
+ksplot(logit_roc)
+
+ksplot(logit_roc)$'KS Stat'
+
+ksplot(logit_roc)$'KS Cutoff'
+```
+
+```{r}
+insurance_v_bin <- read_csv("~/MSA/Logistic Regression/hw/Homework3_LR/insurance_v_bin.csv")
+
+insurance_v_bin <- lapply(insurance_v_bin, function(x) {
+  x[is.na(x)] <- "MISSING"
+  return(x)
+})
+
+insurance_v_bin$CASHBK <- replace(insurance_v_bin$CASHBK, insurance_v_bin$CASHBK %in% c(1, 2), "1+")
+
+insurance_v_bin$MMCRED <- replace(insurance_v_bin$MMCRED, insurance_v_bin$MMCRED %in% c(5, 3), "3+")
+
+insurance_v_bin <- as.data.frame(insurance_v_bin)
+
+insurance_v_bin <- insurance_v_bin %>%
+  mutate(across(everything(), ~as.factor(.)))
+
+
+insurance_v_bin$p_hat <- predict(for.model, type = "response", newdata = insurance_v_bin)
+p1 <- insurance_v_bin$p_hat[insurance_v_bin$INS == 1]
+p0 <- insurance_v_bin$p_hat[insurance_v_bin$INS == 0]
+
+```
+```{r}
+somers2(insurance_v_bin$p_hat, as.numeric(as.character(insurance_v_bin$INS)))
+
+insurance_v_bin$INS <- as.factor(insurance_v_bin$INS)
+
+logit_roc <- rocit(class = insurance_v_bin$INS, score =insurance_v_bin$p_hat)
+
+logit_lift <- gainstable(logit_roc)
+print(logit_lift)
+
+
+alphan = 0.2970672
+
+insurance_v_bin <- insurance_v_bin %>%
+  mutate(ins_hat = ifelse(p_hat > alphan, 1, 0))
+
+table(insurance_v_bin$ins_hat, insurance_v_bin$INS)
+
+# Plot the lift chart
+plot(logit_lift, main = "Lift Chart", xlab = "Number of Observations", ylab = "Lift")
+```
+
+
+
+
+
+
